@@ -143,8 +143,52 @@ class MyThread(threading.Thread):
                             result.append(item)
                     except:
                         continue
+
         else:
-            print("direction error!")
+            while result != None and self.depth <= self.max_depth and self.peoplenum <= self.max_people and self.__running.is_set():
+                for item in result:
+                    user = item["mblog"]["user"]
+                    info = []
+                    info.append(user["id"])
+                    info.append(user["screen_name"])
+                    info.append(user["verified"])
+                    info.append(user["description"])
+                    info.append(user["gender"])
+                    info.append(user["followers_count"])
+                    info.append(user["follow_count"])
+                    lock.acquire()
+                    try:
+                        with open(self.taskname + ".csv", 'a', errors='ignore', newline='') as f:
+                            ff = csv.writer(f)
+                            ff.writerow(info)
+                            f.close()
+                    finally:
+                        self.peoplenum += 1
+                        lock.release()
+                        loop.append(info[0])
+                self.depth += 1
+
+                self.__nopause.wait()
+                if not self.__nopause.is_set():
+                    break
+
+                result = []
+                for item in loop:
+
+                    if not self.__running.is_set():
+                        break
+
+                    url = "http://m.weibo.cn/container/getSecond?containerid=100505" + str(item) + "_ - _WEIBO_SECOND_PROFILE_LIKE_WEIBO"
+                    self.header["Referer"] = url
+                    try:
+                        content = requests.get(url, self.header).json()["cards"]
+                        time.sleep(self.interval)
+                        if len(content) > self.max_width:
+                            content = content[0:self.max_width]
+                        for item in content:
+                            result.append(item)
+                    except:
+                        continue
 
 
 class SpiderWb():
@@ -162,6 +206,8 @@ class SpiderWb():
         self.spider_interval=spider_interval
         self.fans_thread=[]
         self.follow_thread=[]
+        self.like_thread=[]
+        self.__false=False
 
     def start(self):
 
@@ -182,8 +228,14 @@ class SpiderWb():
             }
             fans_response=requests.get(fans_url,fans_header,proxies=self.__proxy,timeout=random.choice(range(100,120)))
             fans_json=fans_response.json()
-            fans_content=fans_json["cards"]
-            count=int(len(fans_content)/self.__threads)
+            try:
+                fans_content=fans_json["cards"]
+                count=int(len(fans_content)/self.__threads)
+            except:
+                print("数据加载失败!")
+                self.__false=True
+                return False
+
             #write some info
             with open(self.__task_name + ".csv", 'a', errors='ignore', newline='') as f:
                 ff = csv.writer(f)
@@ -219,8 +271,13 @@ class SpiderWb():
             }
             follow_response=requests.get(follow_url,follow_header,proxies=self.__proxy,timeout=random.choice(range(100,120)))
             follow_json=follow_response.json()
-            follow_content=follow_json["cards"]
-            count=int(len(follow_content)/self.__threads)
+            try:
+                follow_content=follow_json["cards"]
+                count=int(len(follow_content)/self.__threads)
+            except:
+                print("数据加载失败!")
+                self.__false=True
+                return False
 
             #write some info
             with open(self.taskname + ".csv", 'a', errors='ignore', newline='') as f:
@@ -241,23 +298,48 @@ class SpiderWb():
                 i.start()
 
 
+        #direction : "likes"
         else:
-            likes_url="http://m.weibo.cn/container/getSecond?containerid=100505"+ str(self.__start_user) +"_ - _WEIBO_SECOND_PROFILE_LIKE_WEIBO"
+            likes_url="http://m.weibo.cn/container/getSecond?containerid=100505"+ str(self.__start_user) +"_-_WEIBO_SECOND_PROFILE_LIKE_WEIBO"
             likes_header = {
                 "Host": "m.weibo.cn",
                 "User - Agent": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:52.0) Gecko/20100101 Firefox/52.0",
-                "Accept": "application/json, text/plain, */*",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept - Language": "en-US,en;q=0.5",
                 "Accept - Encoding": "gzip, deflate",
-                "Referer": likes_url,
-                "X - Requested - With": "XMLHttpRequest",
-                "Connection": "keep-alive"
+                "Upgrade-Insecure-Requests":"1",
+                "Connection": "keep-alive",
+                "Cache - Control": "max-age=0"
             }
             likes_response=requests.get(likes_url,likes_header,proxies=self.__proxy,timeout=random.choice(range(100,120)))
             likes_json=likes_response.json()
-            likes_count=likes_json["count"]
-            likes_content=likes_json["cards"]
+            try:
+                likes_count=likes_json["count"]
+                likes_content=likes_json["cards"]
+                count = int(likes_count/ self.__threads)
+            except:
+                print("数据加载失败!")
+                self.__false=True
+                return False
 
+            # write some info
+            with open(self.__task_name + ".csv", 'a', errors='ignore', newline='') as f:
+                ff = csv.writer(f)
+                ff.writerow(
+                    ["id", "screen_name", "verified", "description", "gender", "followers_count", "follow_count"])
+                f.close()
+
+            # mutiple_thread
+            for i in range(self.__threads):
+                self.like_thread.append(MyThread(taskname=self.__task_name,
+                                                   direction=self.__direction,
+                                                   depth=self.__spider_depth,
+                                                   people=self.__spider_people,
+                                                   width=self.__spider_width,
+                                                   start_list=likes_content[i * count:(i + 1) * count],
+                                                   interval=self.spider_interval))
+            for i in self.like_thread:
+                i.start()
 
 
     def parse(self):
@@ -267,6 +349,9 @@ class SpiderWb():
         elif self.__direction=="followers":
             for i in self.follow_thread:
                 i.pause()
+        else:
+            for i in self.like_thread:
+                i.pause()
 
 
     def resume(self):
@@ -275,6 +360,9 @@ class SpiderWb():
                 i.resume()
         elif self.__direction=="followers":
             for i in self.follow_thread:
+                i.resume()
+        else:
+            for i in self.like_thread:
                 i.resume()
 
 
@@ -291,11 +379,17 @@ class SpiderWb():
             for i in self.follow_thread:
                 i.join()
 
+        else:
+            for i in self.like_thread:
+                i.stop()
+            for i in self.like_thread:
+                i.join()
+
 
     def time_over(self):
-        time.sleep(self.__spider_time)
-        self.stop()
-
+        if self.__false==False:
+            time.sleep(self.__spider_time)
+            self.stop()
 
 
 
@@ -323,7 +417,7 @@ if __name__=="__main__":
     proxy={
 
     }
-    sw=SpiderWb("5822209475","fans",4,direction="fans",spider_depth=5,proxy=proxy)
+    sw=SpiderWb(start_user="5822209475",task_name="like",threads=4,direction="likes",spider_depth=5,proxy=proxy)
     sw.start()
     sw.time_over()
     #GetInfo("fans.csv").getAll()
