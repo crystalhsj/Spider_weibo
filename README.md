@@ -1,2 +1,2 @@
 # Spider_weibo
-spider  the infomation of users' fans and followers
+spider  the infomation of users' fans , followers and likes.
